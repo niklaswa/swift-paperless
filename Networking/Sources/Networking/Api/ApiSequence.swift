@@ -33,8 +33,17 @@ where Element: Model & Decodable & Sendable {
         "Unable to decompose next-page URL for sequence URL fix, continuing with original URL")
       return url
     }
+    
+    guard let connectionComponents = URLComponents(url: repository.connection.url, resolvingAgainstBaseURL: false) else {
+      Logger.networking.error(
+        "Unable to decompose connection URL for sequence URL fix, continuing with original URL")
+      return url
+    }
 
-    components.scheme = repository.connection.scheme
+    // Copy scheme, host, and port from the configured connection
+    components.scheme = connectionComponents.scheme
+    components.host = connectionComponents.host
+    components.port = connectionComponents.port
 
     guard let result = components.url else {
       Logger.networking.error(
