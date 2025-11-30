@@ -136,6 +136,7 @@ private struct DocumentPropertyView: View {
 
   @EnvironmentObject private var store: DocumentStore
   @EnvironmentObject private var errorController: ErrorController
+  @EnvironmentObject private var offlineManager: OfflineManager
 
   @ScaledMetric(relativeTo: .body) private var spacing = 15.0
 
@@ -269,18 +270,30 @@ private struct DocumentPropertyView: View {
           }
           .offset(y: secondaryOffset)
 
-        Label(localized: .localizable(.edit), systemImage: "square.and.pencil.circle.fill")
-          .labelStyle(.iconOnly)
-          .font(.title)
-          .fontWeight(.bold)
-          .symbolRenderingMode(.palette)
-          .foregroundStyle(.primary, .tertiary)
-          .offset(y: secondaryOffset)
-          .onTapGesture {
-            Haptics.shared.impact(style: .medium)
-            showEditSheet = true
-          }
-          .accessibilityIdentifier("documentEditButton")
+        if !offlineManager.isOnline {
+          // Show disabled edit button with offline indicator
+          Label(localized: .settings(.offlineEditingDisabled), systemImage: "pencil.slash")
+            .labelStyle(.iconOnly)
+            .font(.title)
+            .fontWeight(.bold)
+            .symbolRenderingMode(.palette)
+            .foregroundStyle(.secondary, .tertiary)
+            .offset(y: secondaryOffset)
+            .accessibilityIdentifier("documentEditButtonDisabled")
+        } else {
+          Label(localized: .localizable(.edit), systemImage: "square.and.pencil.circle.fill")
+            .labelStyle(.iconOnly)
+            .font(.title)
+            .fontWeight(.bold)
+            .symbolRenderingMode(.palette)
+            .foregroundStyle(.primary, .tertiary)
+            .offset(y: secondaryOffset)
+            .onTapGesture {
+              Haptics.shared.impact(style: .medium)
+              showEditSheet = true
+            }
+            .accessibilityIdentifier("documentEditButton")
+        }
       }
 
       panel
@@ -326,6 +339,7 @@ struct DocumentDetailViewV3: DocumentDetailViewProtocol {
   @Environment(\.horizontalSizeClass) private var horizontalSizeClass
 
   @EnvironmentObject private var errorController: ErrorController
+  @EnvironmentObject private var offlineManager: OfflineManager
 
   var navPath: Binding<NavigationPath>? = nil
 
@@ -380,7 +394,8 @@ struct DocumentDetailViewV3: DocumentDetailViewProtocol {
     _viewModel = State(
       initialValue: DocumentDetailModel(
         store: store,
-        document: document))
+        document: document,
+        offlineManager: nil))  // Will be configured in onAppear
     self.navPath = navPath
   }
 
@@ -496,7 +511,8 @@ struct DocumentDetailViewV3: DocumentDetailViewProtocol {
           }
         }
         .onEnded { value in
-          if value.translation.height < -dragThresholdUp {
+          // Only allow edit gesture when online
+          if value.translation.height < -dragThresholdUp && offlineManager.isOnline {
             showEditSheet = true
           }
 
@@ -532,6 +548,13 @@ struct DocumentDetailViewV3: DocumentDetailViewProtocol {
           .equatable()
           .ignoresSafeArea(edges: [.top, .bottom])
           .opacity(webviewOpacity)
+        } else if viewModel.download == .error && viewModel.isOffline {
+          // Show offline error state
+          ContentUnavailableView {
+            Label(localized: .settings(.statusOffline), systemImage: "wifi.slash")
+          } description: {
+            Text(.settings(.offlineOnlyViewModeDescription))
+          }
         } else {
           // Somewhat hacky way to center progress view + not push it by swiping up
           LoadingView(viewModel: viewModel)
@@ -539,6 +562,21 @@ struct DocumentDetailViewV3: DocumentDetailViewProtocol {
       }
       .task {
         safeAreaInsets = geoOuter.safeAreaInsets
+      }
+
+      // Show offline banner at top when offline
+      .safeAreaInset(edge: .top) {
+        if viewModel.isOffline {
+          HStack {
+            Image(systemName: "wifi.slash")
+            Text(.settings(.offlineOnlyViewMode))
+          }
+          .font(.caption)
+          .foregroundStyle(.white)
+          .padding(.vertical, 4)
+          .frame(maxWidth: .infinity)
+          .background(Color.orange)
+        }
       }
 
       .animation(.default, value: viewModel.download)
@@ -579,18 +617,27 @@ struct DocumentDetailViewV3: DocumentDetailViewProtocol {
     }
 
     .task {
+      // Configure offline manager for the view model FIRST
+      viewModel.offlineManager = offlineManager
+
       editDetent = defaultEditDetent
 
+      // Now load data (will check offline status properly)
       async let doc: () = viewModel.loadDocument()
-
       await viewModel.loadMetadata()
-
       await doc
     }
     .toolbarBackground(.visible, for: .navigationBar)
     .toolbarBackground(.thinMaterial, for: .navigationBar)
     .toolbar {
       ToolbarItemGroup(placement: .topBarTrailing) {
+        // Show offline indicator
+        if !offlineManager.isOnline {
+          Label(localized: .settings(.statusOffline), systemImage: "wifi.slash")
+            .labelStyle(.iconOnly)
+            .foregroundStyle(.orange)
+        }
+
         Label(localized: .localizable(.share), systemImage: "square.and.arrow.up")
           .tint(.accent)
           .overlay {
@@ -775,6 +822,7 @@ private struct WebViewInternal: UIViewRepresentable {
 private struct PreviewHelper: View {
   @StateObject var store = DocumentStore(repository: PreviewRepository(downloadDelay: 3.0))
   @StateObject var errorController = ErrorController()
+  @StateObject var offlineManager = OfflineManager()
 
   @State var document: Document?
   @State var navPath = NavigationPath()
@@ -811,6 +859,7 @@ private struct PreviewHelper: View {
     }
     .environmentObject(store)
     .environmentObject(errorController)
+    .environmentObject(offlineManager)
     .task {
       try? await store.fetchAll()
     }

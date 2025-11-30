@@ -64,6 +64,8 @@ final class DocumentStore: ObservableObject, Sendable {
   private(set) var repository: any Repository
 
   private var taskUpdateTask: Task<Void, Never>?
+  
+  weak var offlineManager: OfflineManager?
 
   // MARK: Methods
 
@@ -134,6 +136,40 @@ final class DocumentStore: ObservableObject, Sendable {
     tasks = []
     permissions = .empty
     settings = UISettingsSettings()
+  }
+  
+  /// Load metadata from offline cache when offline
+  func loadFromOfflineCache() {
+    guard let offlineManager else { return }
+    
+    Logger.shared.info("Loading store data from offline cache")
+    
+    // Load documents
+    for document in offlineManager.cachedDocuments() {
+      documents[document.id] = document
+    }
+    
+    // Load correspondents
+    for correspondent in offlineManager.cachedCorrespondents() {
+      correspondents[correspondent.id] = correspondent
+    }
+    
+    // Load document types
+    for docType in offlineManager.cachedDocumentTypes() {
+      documentTypes[docType.id] = docType
+    }
+    
+    // Load tags
+    for tag in offlineManager.cachedTags() {
+      tags[tag.id] = tag
+    }
+    
+    // Load storage paths
+    for storagePath in offlineManager.cachedStoragePaths() {
+      storagePaths[storagePath.id] = storagePath
+    }
+    
+    Logger.shared.info("Loaded \(self.documents.count) documents, \(self.correspondents.count) correspondents, \(self.documentTypes.count) document types, \(self.tags.count) tags, \(self.storagePaths.count) storage paths from offline cache")
   }
 
   func set(repository: some Repository) {

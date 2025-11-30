@@ -237,6 +237,12 @@ struct SettingsView: View {
         } label: {
           Label(String(localized: .settings(.preferences)), systemImage: "dial.low.fill")
         }
+
+        NavigationLink {
+          OfflineSettingsView()
+        } label: {
+          Label(localized: .settings(.offlineTitle), systemImage: "arrow.down.circle.fill")
+        }
       }
 
       organizationSection

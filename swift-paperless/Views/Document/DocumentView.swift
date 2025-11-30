@@ -43,6 +43,7 @@ struct DocumentView: View {
   @EnvironmentObject private var store: DocumentStore
   @EnvironmentObject private var connectionManager: ConnectionManager
   @EnvironmentObject private var errorController: ErrorController
+  @EnvironmentObject private var offlineManager: OfflineManager
 
   @StateObject private var filterModel = FilterModel()
 
@@ -500,12 +501,14 @@ private struct StoreHelper<Content>: View where Content: View {
   @StateObject var store = DocumentStore(repository: PreviewRepository())
   @StateObject var errorController = ErrorController()
   @StateObject var connectionManager = ConnectionManager()
+  @StateObject var offlineManager = OfflineManager()
 
   var body: some View {
     content()
       .environmentObject(store)
       .environmentObject(errorController)
       .environmentObject(connectionManager)
+      .environmentObject(offlineManager)
   }
 }
 

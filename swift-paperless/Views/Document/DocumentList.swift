@@ -47,6 +47,7 @@ struct DocumentList: View {
   @State private var viewModel: DocumentListViewModel
 
   @EnvironmentObject private var errorController: ErrorController
+  @EnvironmentObject private var offlineManager: OfflineManager
 
   @ObservedObject private var appSettings = AppSettings.shared
 
@@ -277,6 +278,7 @@ struct DocumentList: View {
     }
 
     .task {
+      viewModel.offlineManager = offlineManager
       await viewModel.load()
       viewModel.ready = true
     }

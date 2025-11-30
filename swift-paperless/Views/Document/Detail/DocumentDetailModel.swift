@@ -35,6 +35,9 @@ class DocumentDetailModel {
   @ObservationIgnored
   var store: DocumentStore
 
+  @ObservationIgnored
+  weak var offlineManager: OfflineManager?
+
   var document: Document
 
   // Not fully used by the edit model yet (I think we're loading suggestions twice right now)
@@ -42,14 +45,35 @@ class DocumentDetailModel {
 
   var metadata: Metadata?
 
+  /// Whether the user is currently offline
+  var isOffline: Bool {
+    guard let offlineManager = offlineManager else {
+      // If offlineManager not yet configured, assume online
+      return false
+    }
+    return !offlineManager.isOnline
+  }
+
+  /// Whether editing should be disabled (offline mode)
+  var isEditingDisabled: Bool {
+    guard let offlineManager = offlineManager else {
+      return false
+    }
+    return !offlineManager.isOnline
+  }
+
   init(
-    store: DocumentStore, document: Document
+    store: DocumentStore, document: Document, offlineManager: OfflineManager? = nil
   ) {
     self.store = store
     self.document = document
+    self.offlineManager = offlineManager
   }
 
   func loadMetadata() async {
+    // Skip metadata loading when offline
+    guard !isOffline else { return }
+
     do {
       metadata = try await store.repository.metadata(documentId: document.id)
     } catch is CancellationError {
@@ -59,8 +83,36 @@ class DocumentDetailModel {
   }
 
   func loadDocument() async {
-    async let updated = try await store.document(id: document.id)
+    // First check if we have an offline version
+    if let offlineManager = offlineManager,
+       let offlineURL = offlineManager.offlineFileURL(for: document.id) {
+      download = .loaded(offlineURL)
 
+      // If online, also try to update the document data
+      if !isOffline {
+        do {
+          if let updated = try await store.document(id: document.id) {
+            document = updated
+          }
+        } catch {
+          Logger.shared.error("Error updating document from server: \(error)")
+        }
+      } else {
+        // When offline, try to get cached document data
+        if let cachedDoc = offlineManager.cachedDocument(id: document.id) {
+          document = cachedDoc
+        }
+      }
+      return
+    }
+
+    // If offline and no local copy, show error
+    if isOffline {
+      download = .error
+      return
+    }
+
+    // Online mode - download the document
     switch download {
     case .initial:
       let setLoading = Task {
@@ -84,6 +136,11 @@ class DocumentDetailModel {
 
         download = .loaded(url)
         setLoading.cancel()
+        
+        // Also update document data
+        if let updated = try await store.document(id: document.id) {
+          document = updated
+        }
       } catch is CancellationError {
       } catch {
         download = .error
@@ -94,22 +151,18 @@ class DocumentDetailModel {
     default:
       break
     }
-
-    do {
-      if let updated = try await updated {
-        document = updated
-      }
-    } catch {
-      Logger.shared.error("Error updating document with full perms for editing: \(error)")
-    }
   }
 
   func loadSuggestions() async throws {
+    // Skip suggestions when offline
+    guard !isOffline else { return }
     suggestions = try await store.repository.suggestions(documentId: document.id)
   }
 
   var userCanChange: Bool {
-    store.userCanChange(document: document)
+    // Disable changes when offline
+    guard !isOffline else { return false }
+    return store.userCanChange(document: document)
   }
 
   var userCanView: Bool {

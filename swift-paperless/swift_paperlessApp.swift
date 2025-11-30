@@ -21,6 +21,8 @@ struct MainView: View {
 
   @StateObject private var errorController: ErrorController
 
+  @StateObject private var offlineManager = OfflineManager()
+
   @Environment(\.scenePhase) var scenePhase
 
   @ObservedObject private var appSettings = AppSettings.shared
@@ -59,9 +61,19 @@ struct MainView: View {
           await sleep(.seconds(0.3))
           await store.set(
             repository: ApiRepository(connection: conn, mode: Bundle.main.appConfiguration.mode))
+          offlineManager.configure(with: store, connectionId: manager.activeConnectionId)
+          store.offlineManager = offlineManager
           storeReady = true
-          try? await store.fetchAll()
+          // If offline, load from cache instead of fetching from server
+          if !offlineManager.isOnline {
+            store.loadFromOfflineCache()
+          } else {
+            try? await store.fetchAll()
+          }
           store.startTaskPolling()
+          if offlineManager.offlineModeEnabled {
+            offlineManager.startDownloadingDocuments()
+          }
           await sleep(.seconds(0.3))
           showLoadingScreen = false
         }
@@ -69,9 +81,19 @@ struct MainView: View {
         Task {
           store = await DocumentStore(
             repository: ApiRepository(connection: conn, mode: Bundle.main.appConfiguration.mode))
+          offlineManager.configure(with: store!, connectionId: manager.activeConnectionId)
+          store!.offlineManager = offlineManager
           storeReady = true
-          try? await store!.fetchAll()
+          // If offline, load from cache instead of fetching from server
+          if !offlineManager.isOnline {
+            store!.loadFromOfflineCache()
+          } else {
+            try? await store!.fetchAll()
+          }
           store!.startTaskPolling()
+          if offlineManager.offlineModeEnabled {
+            offlineManager.startDownloadingDocuments()
+          }
           showLoadingScreen = false
         }
       }
@@ -92,6 +114,7 @@ struct MainView: View {
             .errorOverlay(errorController: errorController)
             .environmentObject(store!)
             .environmentObject(manager)
+            .environmentObject(offlineManager)
 
             .overlay {
               if AppSettings.shared.enableBiometricAppLock,

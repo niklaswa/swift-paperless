@@ -19,11 +19,13 @@ class DocumentListViewModel {
   private var store: DocumentStore
   private var filterState: FilterState
   private var errorController: ErrorController
+  weak var offlineManager: OfflineManager?
 
   var documents: [Document] = []
   var ready = false
 
   var noPermissions = false
+  var isOfflineMode = false
 
   private var source: (any DocumentSource)?
   private var exhausted: Bool = false
@@ -34,10 +36,11 @@ class DocumentListViewModel {
 
   private var imagePrefetcher: ImagePrefetcher
 
-  init(store: DocumentStore, filterState: FilterState, errorController: ErrorController) {
+  init(store: DocumentStore, filterState: FilterState, errorController: ErrorController, offlineManager: OfflineManager? = nil) {
     self.store = store
     self.filterState = filterState
     self.errorController = errorController
+    self.offlineManager = offlineManager
 
     let dataloader = DataLoader()
 
@@ -51,6 +54,10 @@ class DocumentListViewModel {
     imagePrefetcher.didComplete = {
       Logger.shared.debug("Thumbnail prefetching completed")
     }
+  }
+  
+  func setOfflineManager(_ manager: OfflineManager) {
+    self.offlineManager = manager
   }
 
   func reload() async {
@@ -72,6 +79,19 @@ class DocumentListViewModel {
   func load() async {
     Logger.shared.debug("DocumentListViewModel.load")
     guard documents.isEmpty else { return }
+    
+    // Check if we're offline
+    if let offlineManager = offlineManager, !offlineManager.isOnline {
+      isOfflineMode = true
+      // Ensure cache is loaded before accessing offline data
+      await offlineManager.ensureCacheLoaded()
+      loadOfflineDocuments()
+      ready = true
+      return
+    }
+    
+    isOfflineMode = false
+    
     do {
       // Ensure we have up-to-date permissions
       try await store.fetchUISettings()
@@ -96,12 +116,197 @@ class DocumentListViewModel {
       Logger.shared.warning("Insufficient permissions to load documents: \(error)")
     } catch {
       Logger.shared.error("DocumentList failed to load documents: \(error)")
-      errorController.push(error: error)
+      
+      // If loading fails and we have offline data, use it
+      if let offlineManager = offlineManager {
+        await offlineManager.ensureCacheLoaded()
+        if !offlineManager.metadataCache.documents.isEmpty {
+          isOfflineMode = true
+          loadOfflineDocuments()
+        } else {
+          errorController.push(error: error)
+        }
+      } else {
+        errorController.push(error: error)
+      }
     }
+  }
+  
+  private func loadOfflineDocuments() {
+    guard let offlineManager = offlineManager else { return }
+    
+    // Get downloaded document IDs - use cached if available, otherwise compute
+    let downloadedIds: Set<UInt>
+    if !offlineManager.cachedDownloadedIds.isEmpty {
+      downloadedIds = offlineManager.cachedDownloadedIds
+    } else {
+      // Fallback: compute from file system (slower but guaranteed to work)
+      downloadedIds = offlineManager.downloadedDocumentIds()
+    }
+    
+    // Get cached documents that are actually downloaded
+    var cachedDocs = offlineManager.cachedDocuments().filter { downloadedIds.contains($0.id) }
+    
+    // Apply correspondent filter
+    switch filterState.correspondent {
+    case .any:
+      break
+    case .notAssigned:
+      cachedDocs = cachedDocs.filter { $0.correspondent == nil }
+    case .anyOf(let ids):
+      cachedDocs = cachedDocs.filter { doc in
+        guard let correspondentId = doc.correspondent else { return false }
+        return ids.contains(correspondentId)
+      }
+    case .noneOf(let ids):
+      cachedDocs = cachedDocs.filter { doc in
+        guard let correspondentId = doc.correspondent else { return true }
+        return !ids.contains(correspondentId)
+      }
+    }
+    
+    // Apply document type filter
+    switch filterState.documentType {
+    case .any:
+      break
+    case .notAssigned:
+      cachedDocs = cachedDocs.filter { $0.documentType == nil }
+    case .anyOf(let ids):
+      cachedDocs = cachedDocs.filter { doc in
+        guard let docTypeId = doc.documentType else { return false }
+        return ids.contains(docTypeId)
+      }
+    case .noneOf(let ids):
+      cachedDocs = cachedDocs.filter { doc in
+        guard let docTypeId = doc.documentType else { return true }
+        return !ids.contains(docTypeId)
+      }
+    }
+    
+    // Apply storage path filter
+    switch filterState.storagePath {
+    case .any:
+      break
+    case .notAssigned:
+      cachedDocs = cachedDocs.filter { $0.storagePath == nil }
+    case .anyOf(let ids):
+      cachedDocs = cachedDocs.filter { doc in
+        guard let pathId = doc.storagePath else { return false }
+        return ids.contains(pathId)
+      }
+    case .noneOf(let ids):
+      cachedDocs = cachedDocs.filter { doc in
+        guard let pathId = doc.storagePath else { return true }
+        return !ids.contains(pathId)
+      }
+    }
+    
+    // Apply tags filter
+    switch filterState.tags {
+    case .any:
+      break
+    case .notAssigned:
+      cachedDocs = cachedDocs.filter { $0.tags.isEmpty }
+    case .allOf(let include, let exclude):
+      cachedDocs = cachedDocs.filter { doc in
+        // Must have all included tags
+        for tagId in include {
+          if !doc.tags.contains(tagId) {
+            return false
+          }
+        }
+        // Must not have any excluded tags
+        for tagId in exclude {
+          if doc.tags.contains(tagId) {
+            return false
+          }
+        }
+        return true
+      }
+    case .anyOf(let ids):
+      cachedDocs = cachedDocs.filter { doc in
+        for tagId in ids {
+          if doc.tags.contains(tagId) {
+            return true
+          }
+        }
+        return false
+      }
+    }
+    
+    // Apply search filter if present
+    if !filterState.searchText.isEmpty {
+      let query = filterState.searchText.lowercased()
+      cachedDocs = cachedDocs.filter { doc in
+        doc.title.lowercased().contains(query)
+      }
+    }
+    
+    // Apply sorting
+    cachedDocs.sort { (doc1: Document, doc2: Document) -> Bool in
+      switch filterState.sortField {
+      case .added:
+        let a1 = doc1.added ?? .distantPast
+        let a2 = doc2.added ?? .distantPast
+        return filterState.sortOrder.reverse 
+          ? a1 > a2 
+          : a1 < a2
+      case .created:
+        return filterState.sortOrder.reverse 
+          ? doc1.created > doc2.created 
+          : doc1.created < doc2.created
+      case .modified:
+        let m1 = doc1.modified ?? .distantPast
+        let m2 = doc2.modified ?? .distantPast
+        return filterState.sortOrder.reverse 
+          ? m1 > m2 
+          : m1 < m2
+      case .title:
+        return filterState.sortOrder.reverse 
+          ? doc1.title > doc2.title 
+          : doc1.title < doc2.title
+      case .asn:
+        let asn1 = doc1.asn ?? 0
+        let asn2 = doc2.asn ?? 0
+        return filterState.sortOrder.reverse 
+          ? asn1 > asn2 
+          : asn1 < asn2
+      case .correspondent:
+        let c1 = doc1.correspondent ?? 0
+        let c2 = doc2.correspondent ?? 0
+        return filterState.sortOrder.reverse 
+          ? c1 > c2 
+          : c1 < c2
+      case .documentType:
+        let dt1 = doc1.documentType ?? 0
+        let dt2 = doc2.documentType ?? 0
+        return filterState.sortOrder.reverse 
+          ? dt1 > dt2 
+          : dt1 < dt2
+      case .storagePath:
+        let sp1 = doc1.storagePath ?? 0
+        let sp2 = doc2.storagePath ?? 0
+        return filterState.sortOrder.reverse 
+          ? sp1 > sp2 
+          : sp1 < sp2
+      case .score, .pageCount, .owner, .notes, .customField, .other:
+        // Fall back to sorting by added date for unsupported fields
+        let a1 = doc1.added ?? .distantPast
+        let a2 = doc2.added ?? .distantPast
+        return filterState.sortOrder.reverse 
+          ? a1 > a2 
+          : a1 < a2
+      }
+    }
+    
+    documents = cachedDocs
+    exhausted = true
+    Logger.shared.info("Loaded \(cachedDocs.count) offline documents")
   }
 
   func fetchMoreIfNeeded(currentIndex: Int) async {
-    if exhausted { return }
+    // Don't fetch more when in offline mode
+    if isOfflineMode || exhausted { return }
     if currentIndex >= documents.count - fetchMargin {
       let repository = store.repository
       Task.detached {
@@ -139,6 +344,19 @@ class DocumentListViewModel {
   }
 
   func refresh(filter: FilterState? = nil, retain: Bool = false) async throws -> [Document] {
+    // Check if we're offline
+    if let offlineManager = offlineManager, !offlineManager.isOnline {
+      if let filter {
+        filterState = filter
+      }
+      isOfflineMode = true
+      // Ensure cache is loaded before accessing offline data
+      await offlineManager.ensureCacheLoaded()
+      loadOfflineDocuments()
+      return documents
+    }
+    
+    isOfflineMode = false
     try await store.fetchAll()
 
     if let filter {
