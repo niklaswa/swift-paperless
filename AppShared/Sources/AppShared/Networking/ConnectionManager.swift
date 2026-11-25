@@ -279,7 +279,14 @@ public final class ConnectionManager {
         if let token = previewArguments?.token {
           try previewStoredConnection.setToken(token)
         }
-        try database.upsertConnection(previewStoredConnection.toRecord(needsAuth: false))
+        // The row's own settings outlive a relaunch, like any server's: the
+        // launch arguments say where the server is, not how it is cached.
+        var record = previewStoredConnection.toRecord(needsAuth: false)
+        if let existing = try database.connection(id: Self.previewConnectionID) {
+          record.offlineBrowsingMode = existing.offlineBrowsingMode
+          record.syncOverCellular = existing.syncOverCellular
+        }
+        try database.upsertConnection(record)
       } catch {
         Logger.api.error("Could not store the preview connection: \(error)")
       }
