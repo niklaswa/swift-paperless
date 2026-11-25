@@ -42,6 +42,11 @@ public actor SearchIndexer {
     static let candidates = 64
     /// Characters of text held in memory at once.
     static let characters = 2_000_000
+    /// A pass that indexed at least this many texts merges the index's
+    /// segments afterwards. Only a backlog gets there (the first pass after
+    /// the index was introduced, or after the cache was cleared); the passes
+    /// that follow a download are small, and FTS5 merges those as it goes.
+    static let optimizeAfter = 2_000
   }
 
   private let database: Database
@@ -148,9 +153,7 @@ public actor SearchIndexer {
       Logger.persistence.info(
         "Search index: indexed \(report.indexed, privacy: .public) text(s), \(report.unreadable, privacy: .public) unreadable"
       )
-      // A fill leaves one segment per batch; fold them once it has gone
-      // quiet enough for a pass to finish.
-      if report.indexed >= Batch.candidates {
+      if report.indexed >= Batch.optimizeAfter {
         try? await database.optimizeSearchIndex()
       }
     }
