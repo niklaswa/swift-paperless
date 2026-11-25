@@ -1,0 +1,165 @@
+//
+//  OfflineUITests.swift
+//  swift-paperlessUITests
+//
+//  Drives the offline screens against a running mock server
+//  (scripts/mock_paperless/server.py, see its README). Not part of CI, and
+//  not one self-contained run: the tests are steps of a manual session, in
+//  which the mock is stopped and started between them.
+//
+
+import XCTest
+
+final class OfflineUITests: XCTestCase {
+  private var mockURL: String {
+    ProcessInfo.processInfo.environment["MOCK_URL"] ?? "http://127.0.0.1:8770"
+  }
+
+  override func setUpWithError() throws {
+    continueAfterFailure = false
+  }
+
+  @MainActor
+  private func attach(_ name: String) {
+    let attachment = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+    attachment.name = name
+    attachment.lifetime = .keepAlways
+    add(attachment)
+  }
+
+  /// Launches the app and, on a fresh install, logs in through the UI, so the
+  /// server is a real one whose settings can be changed (the preview launch
+  /// arguments give a server without an active connection). A no-op when the
+  /// app is already logged in.
+  @MainActor
+  private func launchLoggedIn() throws -> XCUIApplication {
+    let app = XCUIApplication()
+    app.launch()
+    let getStarted = app.buttons["Get started"]
+    let url = app.textFields["paperless.example.com"]
+    let documents = app.buttons["Documents"]
+    // The welcome page, the login form, or the document list.
+    for _ in 0..<30 {
+      if getStarted.exists || url.exists || documents.exists { break }
+      sleep(1)
+    }
+    if getStarted.exists { getStarted.tap() }
+    guard url.waitForExistence(timeout: 5) else { return app }
+
+    url.tap()
+    url.typeText(mockURL)
+    let next = app.buttons["Continue"]
+    XCTAssertTrue(next.waitForExistence(timeout: 20), app.debugDescription)
+    for _ in 0..<20 where !next.isEnabled { sleep(1) }
+    next.tap()
+
+    let username = app.textFields["Username"]
+    XCTAssertTrue(username.waitForExistence(timeout: 20), app.debugDescription)
+    username.tap()
+    username.typeText("admin")
+    let password = app.secureTextFields["Password"]
+    password.tap()
+    password.typeText("mock-password")
+    app.buttons["Log in"].tap()
+    XCTAssertTrue(documents.waitForExistence(timeout: 60), app.debugDescription)
+    return app
+  }
+
+  @MainActor
+  private func openOfflineSync(_ app: XCUIApplication) throws {
+    let menu = app.buttons["Menu of more options"]
+    XCTAssertTrue(menu.waitForExistence(timeout: 30))
+    menu.tap()
+    let settings = app.buttons["Settings"]
+    XCTAssertTrue(settings.waitForExistence(timeout: 5), app.debugDescription)
+    settings.tap()
+    let offline = app.staticTexts["Offline & Sync"]
+    XCTAssertTrue(offline.waitForExistence(timeout: 10), app.debugDescription)
+    offline.tap()
+    XCTAssertTrue(app.staticTexts["Size of entire library"].waitForExistence(timeout: 10))
+  }
+
+  @MainActor
+  func testLogin() throws {
+    _ = try launchLoggedIn()
+    sleep(3)
+    attach("logged-in")
+  }
+
+  /// The Offline & Sync screen: the library size estimate and the storage
+  /// figures.
+  @MainActor
+  func testOfflineSyncScreen() throws {
+    let app = try launchLoggedIn()
+    try openOfflineSync(app)
+    // Let the sampled estimate land.
+    sleep(6)
+    attach("offline-sync-top")
+    app.swipeUp()
+    sleep(1)
+    attach("offline-sync-middle")
+    app.swipeUp()
+    sleep(1)
+    attach("offline-sync-bottom")
+  }
+
+  /// Turning on "Search all documents offline" starts downloading the texts.
+  @MainActor
+  func testEnableLibraryText() throws {
+    let app = try launchLoggedIn()
+    try openOfflineSync(app)
+    sleep(5)
+    // The switch's label carries its caption too.
+    let toggle = app.switches.matching(
+      NSPredicate(format: "label BEGINSWITH %@", "Search all documents offline")
+    ).firstMatch
+    XCTAssertTrue(toggle.waitForExistence(timeout: 5), app.debugDescription)
+    if (toggle.value as? String) != "1" {
+      // The switch itself, not the row's label.
+      toggle.coordinate(withNormalizedOffset: CGVector(dx: 0.93, dy: 0.5)).tap()
+    }
+    XCTAssertEqual(toggle.value as? String, "1")
+    sleep(8)
+    attach("library-text-on")
+    app.swipeUp()
+    sleep(1)
+    attach("library-text-status")
+  }
+
+  /// Typing a search while the server is unreachable answers from the device,
+  /// and from the second word on without waiting for a request to fail.
+  @MainActor
+  func testSearchWhileUnreachable() throws {
+    let app = try launchLoggedIn()
+    let field = app.textFields["Search"]
+    XCTAssertTrue(field.waitForExistence(timeout: 30))
+    field.tap()
+    field.typeText("haftpflicht")
+    XCTAssertTrue(app.staticTexts["Offline results"].waitForExistence(timeout: 90))
+    attach("search-offline-first")
+    field.typeText(" kündigung")
+    sleep(2)
+    XCTAssertTrue(app.staticTexts["Offline results"].exists)
+    attach("search-offline-second")
+    field.typeText(" gibtesnichtxyz")
+    XCTAssertTrue(app.staticTexts["No matches on this device"].waitForExistence(timeout: 10))
+    attach("search-offline-empty")
+  }
+
+  /// With the server back, Retry replaces the device's answer with the
+  /// server's.
+  @MainActor
+  func testRetryWhenReachableAgain() throws {
+    let app = try launchLoggedIn()
+    let field = app.textFields["Search"]
+    XCTAssertTrue(field.waitForExistence(timeout: 30))
+    let banner = app.staticTexts["Offline results"]
+    if banner.waitForExistence(timeout: 5) {
+      attach("before-retry")
+      app.buttons["Retry"].firstMatch.tap()
+    }
+    for _ in 0..<30 where banner.exists { sleep(1) }
+    XCTAssertFalse(banner.exists)
+    attach("after-retry")
+  }
+}
