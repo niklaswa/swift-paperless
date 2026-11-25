@@ -153,7 +153,9 @@ final class OfflineUITests: XCTestCase {
     sleep(2)
     XCTAssertTrue(app.staticTexts["Offline results"].exists)
     attach("search-offline-second")
-    field.typeText(" gibtesnichtxyz")
+    // A word no earlier run has searched for: an empty answer the server
+    // once gave for the same search is cached, and shown as the server's.
+    field.typeText(" nix\(Int(Date().timeIntervalSince1970))")
     XCTAssertTrue(app.staticTexts["No matches on this device"].waitForExistence(timeout: 10))
     attach("search-offline-empty")
   }
