@@ -65,6 +65,20 @@ final class OfflineUITests: XCTestCase {
     return app
   }
 
+  /// Focus the search field and empty it: the search text outlives a launch.
+  @MainActor
+  private func focusEmptySearchField(_ app: XCUIApplication) -> XCUIElement {
+    let field = app.textFields["Search"]
+    XCTAssertTrue(field.waitForExistence(timeout: 30))
+    // The button next to the field that is only there while it holds text.
+    let clear = app.buttons["xmark"]
+    if clear.waitForExistence(timeout: 3) {
+      clear.tap()
+    }
+    field.tap()
+    return field
+  }
+
   @MainActor
   private func openOfflineSync(_ app: XCUIApplication) throws {
     let menu = app.buttons["Menu of more options"]
@@ -131,9 +145,7 @@ final class OfflineUITests: XCTestCase {
   @MainActor
   func testSearchWhileUnreachable() throws {
     let app = try launchLoggedIn()
-    let field = app.textFields["Search"]
-    XCTAssertTrue(field.waitForExistence(timeout: 30))
-    field.tap()
+    let field = focusEmptySearchField(app)
     field.typeText("haftpflicht")
     XCTAssertTrue(app.staticTexts["Offline results"].waitForExistence(timeout: 90))
     attach("search-offline-first")
@@ -144,6 +156,46 @@ final class OfflineUITests: XCTestCase {
     field.typeText(" gibtesnichtxyz")
     XCTAssertTrue(app.staticTexts["No matches on this device"].waitForExistence(timeout: 10))
     attach("search-offline-empty")
+  }
+
+  /// Tell the mock how to answer: "hang" (never), "503", or "off" (normally).
+  private func setMockFailure(_ mode: String) {
+    var request = URLRequest(url: URL(string: "\(mockURL)/__mock/fail?mode=\(mode)")!)
+    request.httpMethod = "POST"
+    let done = expectation(description: "mock \(mode)")
+    URLSession.shared.dataTask(with: request) { _, _, _ in done.fulfill() }.resume()
+    wait(for: [done], timeout: 10)
+  }
+
+  /// A server that accepts connections and never answers. Its requests take
+  /// minutes to fail, so the list doesn't wait for that: after a moment it
+  /// shows what the device finds, and the server's answer replaces it once
+  /// the server responds again.
+  @MainActor
+  func testHangingServer() throws {
+    setMockFailure("off")
+    let app = try launchLoggedIn()
+    let field = focusEmptySearchField(app)
+    sleep(5)
+    setMockFailure("hang")
+    defer { setMockFailure("off") }
+
+    field.typeText("quittungsnummer-7781")
+    let meanwhile = app.staticTexts["Results from this device"]
+    let offline = app.staticTexts["Offline results"]
+    let started = Date()
+    for _ in 0..<40 where !meanwhile.exists && !offline.exists { usleep(250_000) }
+    XCTAssertTrue(meanwhile.exists || offline.exists, app.debugDescription)
+    print("FIELD-VALUE <\(field.value as? String ?? "?")>")
+    print("LOCAL-RESULTS after \(Date().timeIntervalSince(started)) s")
+    attach("hang-local-results")
+
+    // The server answers again: the held requests are dropped, retried, and
+    // the list becomes the server's.
+    setMockFailure("off")
+    for _ in 0..<180 where meanwhile.exists || offline.exists { sleep(1) }
+    XCTAssertFalse(meanwhile.exists || offline.exists)
+    attach("hang-server-answered")
   }
 
   /// With the server back, Retry replaces the device's answer with the
