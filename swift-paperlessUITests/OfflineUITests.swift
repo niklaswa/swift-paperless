@@ -37,7 +37,9 @@ final class OfflineUITests: XCTestCase {
     app.launch()
     let getStarted = app.buttons["Get started"]
     let url = app.textFields["paperless.example.com"]
-    let documents = app.buttons["Documents"]
+    // The list's search field: there on iPhone and iPad alike, where the
+    // title is a button on one and the navigation bar on the other.
+    let documents = app.textFields["Search"]
     // The welcome page, the login form, or the document list.
     for _ in 0..<30 {
       if getStarted.exists || url.exists || documents.exists { break }
@@ -61,6 +63,9 @@ final class OfflineUITests: XCTestCase {
     password.tap()
     password.typeText("mock-password")
     app.buttons["Log in"].tap()
+    // The system's offer to save the password, where it comes up.
+    let notNow = app.buttons["Not Now"]
+    if notNow.waitForExistence(timeout: 8) { notNow.tap() }
     XCTAssertTrue(documents.waitForExistence(timeout: 60), app.debugDescription)
     return app
   }
